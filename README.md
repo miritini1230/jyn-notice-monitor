@@ -1,1 +1,1 @@
-# pandatv-notice-watcher
+# jyn-notice-monitor
