@@ -1,8 +1,26 @@
 # 이 프로젝트에 대해
 
 한국 BJ "주여닝"의 PandaTV 공지(https://www.pandalive.co.kr/channel/podo0311/notice)를
-10분마다 자동 감시해서 새 글이 올라오면 텔레그램으로 알림을 보내는 도구.
-GitHub Actions cron으로 동작하며, 안정적으로 동작 중.
+5분마다 자동 감시해서 새 글이 올라오면 텔레그램으로 알림을 보내는 도구.
+**Cloudflare Workers Cron Trigger**로 동작하며, 안정적으로 동작 중.
+
+# 시스템 구조 (현행)
+
+- **실행 인프라**: Cloudflare Workers (옛 GitHub Actions 시스템에서 이전됨)
+- **코드 파일**: `worker.js` (JavaScript).
+  단, **실제 가동 코드는 Cloudflare 대시보드에 배포된 본**이고,
+  GitHub 리포의 `worker.js`는 **참조용 사본**이다.
+  자동 배포 연동은 안 되어 있으므로, 코드 변경 시 사용자가 Cloudflare 대시보드에
+  복붙해 직접 배포해야 함.
+- **상태 저장**: Cloudflare KV
+  - 네임스페이스: `JYN_NOTICE_STATE`
+  - 코드 내 바인딩 변수명: `NOTICE_STATE`
+  - 키 `last_seen_idx`: 마지막으로 본 일반 공지 idx
+  - 키 `last_error_alert_at`: 에러 알림 마지막 전송 시각 (TTL 1시간 자동 만료)
+- **스케줄**: Cloudflare Cron Trigger, `*/5 * * * *` (5분 간격)
+- **시크릿**: Cloudflare Workers Secrets에 보관
+  - `TELEGRAM_BOT_TOKEN`
+  - `TELEGRAM_CHAT_ID`
 
 # 역할 분담
 
@@ -26,26 +44,36 @@ GitHub Actions cron으로 동작하며, 안정적으로 동작 중.
 
 # 작업 원칙 (엄수)
 
-- **동작 중인 핵심 로직 보호**: isTop 검사, idx 비교, state 관리,
+- **동작 중인 핵심 로직 보호**: isTop 검사, idx 비교, KV 상태 관리,
   API 호출 구조는 사용자가 명시적으로 요청하지 않는 한 수정하지 말 것.
   "더 깔끔하게" 같은 자발적 리팩토링 금지.
 - **환각/추측 금지**: 모호하면 코드 수정 전에 반드시 사용자에게 확인.
 - **클러터 금지**: 자명한 주석, 변경 이력 코멘트, 불필요한 로깅 추가 금지.
   코드는 깨끗하게 유지.
+- **배포는 사용자 손길 필요**: GitHub 푸시만으로는 가동 코드가 안 바뀜.
+  Claude가 worker.js를 수정하면, 변경된 전체 코드(또는 명확한 변경 부분)를
+  사용자에게 전달해 Cloudflare 대시보드에서 복붙·배포할 수 있게 안내할 것.
 
 # 보안
 
-- TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID는 GitHub Secrets에 보관.
-  코드에 절대 하드코딩하지 말 것.
+- TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID는 Cloudflare Workers Secrets에 보관.
+  코드에 절대 하드코딩하지 말 것. GitHub에도 절대 푸시하지 말 것.
 
 # 도메인 컨텍스트
 
 - userIdx 25488714 = 주여닝 채널.
 - API 엔드포인트: POST https://api.pandalive.co.kr/v1/bj_notice
 - 응답의 isTop=true는 핀 고정 공지, false는 일반 공지.
-- state.json 형식: {"last_seen_idx": <number>}. 워크플로우가 자동 갱신.
+- KV 키 `last_seen_idx`: Cloudflare KV에 자동 저장/갱신.
   사용자가 명시 요청하지 않는 한 손대지 말 것.
+- KV 키 `last_error_alert_at`: 에러 알림 쿨다운 관리용. TTL 1시간 자동 만료.
 - 텔레그램 메시지는 한국어 유지.
+
+# 에러 알림 동작
+
+- `run()` 실패 시 텔레그램으로 에러 알림 자동 발송.
+- 1시간 쿨다운(`last_error_alert_at` KV TTL)으로 알림 폭주 방지.
+- 텔레그램 발송 자체가 실패하면 Cloudflare 로그에만 기록.
 
 # 외부 의존성 경고
 
@@ -57,3 +85,9 @@ PandaTV API는 비공식이라 언제든 변경/차단될 수 있음.
 
 - 비활성 시간 동안 여러 공지가 올라오면 가장 최근 1개만 알림.
   사용자가 의도적으로 수용한 동작이며, 자발적으로 "고치지" 말 것.
+
+# 옛 시스템 (참고)
+
+GitHub Actions 기반의 옛 시스템(`check.py`, `state.json`, `.github/workflows/check.yml`)은
+Cloudflare로 이전된 후 비활성화 및 삭제됨. 필요시 git 이력에서 복원 가능.
+GitHub Actions 자체도 Disable 처리됨.
