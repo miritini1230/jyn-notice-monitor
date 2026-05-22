@@ -2,6 +2,7 @@ const USER_IDX = 25488714;
 const API_URL = "https://api.pandalive.co.kr/v1/bj_notice";
 const NOTICE_PAGE_URL = "https://www.pandalive.co.kr/channel/podo0311/notice";
 const ERROR_COOLDOWN_SECONDS = 3600;
+const RECENT_CACHE_SIZE = 5;
 
 async function fetchNotices() {
   const body = new URLSearchParams({
@@ -28,11 +29,10 @@ async function fetchNotices() {
   return await response.json();
 }
 
-function findLatestNonPinned(payload) {
-  for (const item of payload.list || []) {
-    if (!item.isTop) return item;
-  }
-  return null;
+function pickRecentNonPinned(payload, n) {
+  const items = (payload.list || []).filter((x) => !x.isTop);
+  items.sort((a, b) => b.idx - a.idx);
+  return items.slice(0, n);
 }
 
 function cleanHtml(text) {
@@ -90,6 +90,56 @@ async function sendTelegramPhoto(env, photoUrl, caption) {
   }
 }
 
+async function sendNoticeWithImage(env, message, imgUrl) {
+  await sendTelegram(env, message);
+  if (imgUrl) {
+    try {
+      await sendTelegramPhoto(env, imgUrl, "🖼️ 첨부 이미지");
+    } catch (e) {
+      console.error("sendTelegramPhoto failed:", e);
+    }
+  }
+}
+
+function buildNewMessage(notice) {
+  const contents = telegramEscape(cleanHtml(notice.contents));
+  return (
+    `🔔 <b>주여닝 새 공지</b>\n\n${contents}\n\n` +
+    `<i>작성: ${notice.insertDateTime}</i>\n` +
+    `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`
+  );
+}
+
+function buildEditMessage(notice) {
+  const contents = telegramEscape(cleanHtml(notice.contents));
+  return (
+    `✏️ <b>주여닝 공지 수정됨</b>\n\n${contents}\n\n` +
+    `<i>작성: ${notice.insertDateTime}</i>\n` +
+    `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`
+  );
+}
+
+async function loadRecentCache(env) {
+  const str = await env.NOTICE_STATE.get("recent_notices");
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    console.error("recent_notices parse error, treating as empty:", e);
+    return null;
+  }
+}
+
+async function saveRecentCache(env, recent) {
+  const slim = recent.map((n) => ({
+    idx: n.idx,
+    contents: n.contents,
+    imgMainSrc: n.imgMainSrc || "",
+    insertDateTime: n.insertDateTime,
+  }));
+  await env.NOTICE_STATE.put("recent_notices", JSON.stringify(slim));
+}
+
 async function notifyError(env, error) {
   const lastAlert = await env.NOTICE_STATE.get("last_error_alert_at");
   if (lastAlert) {
@@ -119,59 +169,69 @@ async function run(env) {
     throw new Error("API returned result=false");
   }
 
-  const latest = findLatestNonPinned(payload);
-  if (!latest) {
+  const recent = pickRecentNonPinned(payload, RECENT_CACHE_SIZE);
+  if (recent.length === 0) {
     console.log("No non-pinned notice found");
     return;
   }
 
-  const latestIdx = latest.idx;
-  const contents = telegramEscape(cleanHtml(latest.contents));
-  const insertTime = latest.insertDateTime;
-  const imgUrl = latest.imgMainSrc || "";
-
+  const cache = await loadRecentCache(env);
   const lastSeenStr = await env.NOTICE_STATE.get("last_seen_idx");
   const lastSeenIdx = lastSeenStr ? parseInt(lastSeenStr, 10) : 0;
-  console.log(`Latest idx: ${latestIdx}, last seen: ${lastSeenIdx}`);
+  const maxIdx = Math.max(...recent.map((n) => n.idx));
 
-  if (lastSeenIdx === 0) {
-    const message =
-      `✅ <b>주여닝 공지 알림 셋업 완료</b>\n` +
-      `앞으로 새 공지가 올라오면 자동으로 알려드립니다.\n\n` +
-      `<b>현재 최신 공지 (참고)</b>\n${contents}\n\n` +
-      `<i>작성: ${insertTime}</i>`;
-    await sendTelegram(env, message);
-    if (imgUrl) {
-      try {
-        await sendTelegramPhoto(env, imgUrl, "🖼️ 첨부 이미지");
-      } catch (e) {
-        console.error("sendTelegramPhoto failed (setup):", e);
-      }
+  if (cache === null) {
+    if (lastSeenIdx === 0) {
+      const latest = recent[0];
+      const contents = telegramEscape(cleanHtml(latest.contents));
+      const message =
+        `✅ <b>주여닝 공지 알림 셋업 완료</b>\n` +
+        `앞으로 새 공지가 올라오면 자동으로 알려드립니다.\n\n` +
+        `<b>현재 최신 공지 (참고)</b>\n${contents}\n\n` +
+        `<i>작성: ${latest.insertDateTime}</i>`;
+      await sendNoticeWithImage(env, message, latest.imgMainSrc || "");
+      await saveRecentCache(env, recent);
+      await env.NOTICE_STATE.put("last_seen_idx", String(maxIdx));
+      console.log("Setup notification sent");
+    } else {
+      await saveRecentCache(env, recent);
+      console.log("Migrated: recent_notices cache populated silently");
     }
-    await env.NOTICE_STATE.put("last_seen_idx", String(latestIdx));
-    console.log("Setup notification sent");
     return;
   }
 
-  if (latestIdx <= lastSeenIdx) {
-    console.log("No new notice");
+  const cacheByIdx = new Map(cache.map((c) => [c.idx, c]));
+  const newOnes = [];
+  const editedOnes = [];
+
+  for (const n of recent) {
+    const cached = cacheByIdx.get(n.idx);
+    if (!cached) {
+      newOnes.push(n);
+    } else if (cached.contents !== n.contents) {
+      editedOnes.push(n);
+    }
+  }
+
+  if (newOnes.length === 0 && editedOnes.length === 0) {
+    console.log("No new or edited notices");
     return;
   }
 
-  const message =
-    `🔔 <b>주여닝 새 공지</b>\n\n${contents}\n\n` +
-    `<i>작성: ${insertTime}</i>\n` +
-    `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`;
-  await sendTelegram(env, message);
-  if (imgUrl) {
-    try {
-      await sendTelegramPhoto(env, imgUrl, "🖼️ 첨부 이미지");
-    } catch (e) {
-      console.error("sendTelegramPhoto failed:", e);
-    }
+  newOnes.sort((a, b) => a.idx - b.idx);
+  editedOnes.sort((a, b) => a.idx - b.idx);
+
+  for (const n of newOnes) {
+    await sendNoticeWithImage(env, buildNewMessage(n), n.imgMainSrc || "");
+    console.log(`New notice sent: idx ${n.idx}`);
   }
-  await env.NOTICE_STATE.put("last_seen_idx", String(latestIdx));
-  console.log(`Notification sent for idx ${latestIdx}`);
+  for (const n of editedOnes) {
+    await sendNoticeWithImage(env, buildEditMessage(n), n.imgMainSrc || "");
+    console.log(`Edit notice sent: idx ${n.idx}`);
+  }
+
+  await saveRecentCache(env, recent);
+  await env.NOTICE_STATE.put("last_seen_idx", String(maxIdx));
 }
 
 export default {
