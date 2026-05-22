@@ -208,7 +208,10 @@ async function run(env) {
     const cached = cacheByIdx.get(n.idx);
     if (!cached) {
       newOnes.push(n);
-    } else if (cached.contents !== n.contents) {
+    } else if (
+      cached.contents !== n.contents ||
+      (cached.imgMainSrc || "") !== (n.imgMainSrc || "")
+    ) {
       editedOnes.push(n);
     }
   }
