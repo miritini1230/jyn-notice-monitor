@@ -15,13 +15,18 @@
 - **상태 저장**: Cloudflare KV
   - 네임스페이스: `JYN_NOTICE_STATE`
   - 코드 내 바인딩 변수명: `NOTICE_STATE`
-  - 키 `last_seen_idx`: 마지막으로 본 일반 공지 idx
+  - 키 `recent_notices`: 최근 5개 일반 공지 캐시 (JSON 배열). 신규/수정 감지의 기준.
+  - 키 `last_seen_idx`: 마지막으로 본 일반 공지 idx (보조 + 마이그레이션 시그널).
   - 키 `last_error_alert_at`: 에러 알림 마지막 전송 시각 (TTL 1시간 자동 만료)
 - **스케줄**: Cloudflare Cron Trigger, `*/5 * * * *` (5분 간격)
 - **시크릿**: Cloudflare Workers Secrets에 보관
   - `TELEGRAM_BOT_TOKEN`
   - `TELEGRAM_CHAT_ID`
-- **이미지 알림**: 공지의 `imgMainSrc`가 있으면 글 메시지 직후 사진 메시지를 별도로 발송.
+- **알림 정책**:
+  - 신규 공지: 캐시(`recent_notices`)에 없는 일반 공지를 idx 오름차순(옛것부터)으로 모두 발송 (🔔 메시지).
+  - 수정 공지: 캐시 안 공지의 `contents` 또는 `imgMainSrc`가 바뀌면 ✏️ 메시지 발송.
+  - 이미지: 공지의 `imgMainSrc`가 있으면 글 메시지 직후 사진 메시지를 별도로 발송.
+  - 캐시 윈도우: 최근 5개 (`RECENT_CACHE_SIZE`).
 
 # 역할 분담
 
@@ -65,8 +70,9 @@
 - userIdx 25488714 = 주여닝 채널.
 - API 엔드포인트: POST https://api.pandalive.co.kr/v1/bj_notice
 - 응답의 isTop=true는 핀 고정 공지, false는 일반 공지.
-- KV 키 `last_seen_idx`: Cloudflare KV에 자동 저장/갱신.
-  사용자가 명시 요청하지 않는 한 손대지 말 것.
+- KV 키 `recent_notices`: 최근 5개 일반 공지를 JSON 배열로 캐시. `{idx, contents, imgMainSrc, insertDateTime}` 형식.
+  신규 공지(캐시에 없는 idx) 및 수정 공지(캐시와 `contents` 또는 `imgMainSrc` 다름) 감지 기준. 자동 갱신. 손대지 말 것.
+- KV 키 `last_seen_idx`: 처리한 공지 중 가장 큰 idx (보조 + 마이그레이션 트리거 시그널). 자동 갱신. 손대지 말 것.
 - KV 키 `last_error_alert_at`: 에러 알림 쿨다운 관리용. TTL 1시간 자동 만료.
 - 텔레그램 메시지는 한국어 유지.
 - 응답의 `imgMainSrc`: 메인 이미지 URL. 빈 문자열이면 첨부 없음. PandaTV CDN 호스팅이라 외부 접근 가능.
@@ -86,10 +92,10 @@ PandaTV API는 비공식이라 언제든 변경/차단될 수 있음.
 
 # 알려진 한계 (수정 대상 아님)
 
-- 비활성 시간 동안 여러 공지가 올라오면 가장 최근 1개만 알림.
-  사용자가 의도적으로 수용한 동작이며, 자발적으로 "고치지" 말 것.
-- 공지 본문 안 추가 이미지는 미처리. 메인 이미지 1장만 보냄.
-- 공지 수정 감지 불가. PandaTV API에 수정 시간 필드가 없고 `idx`도 수정 시 그대로 유지되어 추적 방법 자체가 없음.
+- 비활성 시간 동안 일반 공지가 6개 이상 누적되면 가장 옛것은 캐시 윈도우 밖이라 알림 누락 가능 (최대 최근 5개까지 잡힘).
+- 공지 본문 안 추가 이미지는 미처리. 메인 이미지(`imgMainSrc`) 1장만 보냄.
+- 캐시 윈도우(최근 5개) 밖으로 밀려난 공지의 수정은 감지 불가. 새 공지가 들어와 캐시에서 빠진 옛 공지는 추적 종료.
+- PandaTV CDN이 같은 이미지에 대해 URL을 미세하게 다르게 줄 경우 1회 거짓 양성 ✏️ 알림 가능 (이론상, 발생 가능성 매우 낮음).
 
 # 옛 시스템 (참고)
 
