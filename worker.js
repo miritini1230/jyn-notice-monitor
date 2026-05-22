@@ -70,6 +70,26 @@ async function sendTelegram(env, message) {
   }
 }
 
+async function sendTelegramPhoto(env, photoUrl, caption) {
+  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`;
+  const body = new URLSearchParams({
+    chat_id: env.TELEGRAM_CHAT_ID,
+    photo: photoUrl,
+    caption: caption,
+  });
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: body.toString(),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+
+  const result = await response.json();
+  if (!result.ok) {
+    throw new Error(`Telegram sendPhoto error: ${JSON.stringify(result)}`);
+  }
+}
+
 async function notifyError(env, error) {
   const lastAlert = await env.NOTICE_STATE.get("last_error_alert_at");
   if (lastAlert) {
@@ -108,6 +128,7 @@ async function run(env) {
   const latestIdx = latest.idx;
   const contents = telegramEscape(cleanHtml(latest.contents));
   const insertTime = latest.insertDateTime;
+  const imgUrl = latest.imgMainSrc || "";
 
   const lastSeenStr = await env.NOTICE_STATE.get("last_seen_idx");
   const lastSeenIdx = lastSeenStr ? parseInt(lastSeenStr, 10) : 0;
@@ -120,6 +141,13 @@ async function run(env) {
       `<b>현재 최신 공지 (참고)</b>\n${contents}\n\n` +
       `<i>작성: ${insertTime}</i>`;
     await sendTelegram(env, message);
+    if (imgUrl) {
+      try {
+        await sendTelegramPhoto(env, imgUrl, "🖼️ 첨부 이미지");
+      } catch (e) {
+        console.error("sendTelegramPhoto failed (setup):", e);
+      }
+    }
     await env.NOTICE_STATE.put("last_seen_idx", String(latestIdx));
     console.log("Setup notification sent");
     return;
@@ -135,6 +163,13 @@ async function run(env) {
     `<i>작성: ${insertTime}</i>\n` +
     `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`;
   await sendTelegram(env, message);
+  if (imgUrl) {
+    try {
+      await sendTelegramPhoto(env, imgUrl, "🖼️ 첨부 이미지");
+    } catch (e) {
+      console.error("sendTelegramPhoto failed:", e);
+    }
+  }
   await env.NOTICE_STATE.put("last_seen_idx", String(latestIdx));
   console.log(`Notification sent for idx ${latestIdx}`);
 }
