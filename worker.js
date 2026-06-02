@@ -35,6 +35,12 @@ function pickRecentNonPinned(payload, n) {
   return items.slice(0, n);
 }
 
+function pickRecentPinned(payload, n) {
+  const items = (payload.list || []).filter((x) => x.isTop);
+  items.sort((a, b) => b.idx - a.idx);
+  return items.slice(0, n);
+}
+
 function cleanHtml(text) {
   return text
     .replace(/<br\s*\/?>/gi, "\n")
@@ -119,6 +125,24 @@ function buildEditMessage(notice) {
   );
 }
 
+function buildPinnedNewMessage(notice) {
+  const contents = telegramEscape(cleanHtml(notice.contents));
+  return (
+    `📌 <b>주여닝 새 고정 공지</b>\n\n${contents}\n\n` +
+    `<i>작성: ${notice.insertDateTime}</i>\n` +
+    `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`
+  );
+}
+
+function buildPinnedEditMessage(notice) {
+  const contents = telegramEscape(cleanHtml(notice.contents));
+  return (
+    `📌 <b>주여닝 고정 공지 수정됨</b>\n\n${contents}\n\n` +
+    `<i>작성: ${notice.insertDateTime}</i>\n` +
+    `<a href="${NOTICE_PAGE_URL}">공지 페이지 열기</a>`
+  );
+}
+
 async function loadRecentCache(env) {
   const str = await env.NOTICE_STATE.get("recent_notices");
   if (!str) return null;
@@ -138,6 +162,27 @@ async function saveRecentCache(env, recent) {
     insertDateTime: n.insertDateTime,
   }));
   await env.NOTICE_STATE.put("recent_notices", JSON.stringify(slim));
+}
+
+async function loadPinnedCache(env) {
+  const str = await env.NOTICE_STATE.get("recent_pinned");
+  if (!str) return null;
+  try {
+    return JSON.parse(str);
+  } catch (e) {
+    console.error("recent_pinned parse error, treating as empty:", e);
+    return null;
+  }
+}
+
+async function savePinnedCache(env, pinned) {
+  const slim = pinned.map((n) => ({
+    idx: n.idx,
+    contents: n.contents,
+    imgMainSrc: n.imgMainSrc || "",
+    insertDateTime: n.insertDateTime,
+  }));
+  await env.NOTICE_STATE.put("recent_pinned", JSON.stringify(slim));
 }
 
 async function notifyError(env, error) {
@@ -163,12 +208,7 @@ async function notifyError(env, error) {
   }
 }
 
-async function run(env) {
-  const payload = await fetchNotices();
-  if (!payload.result) {
-    throw new Error("API returned result=false");
-  }
-
+async function processRegular(env, payload) {
   const recent = pickRecentNonPinned(payload, RECENT_CACHE_SIZE);
   if (recent.length === 0) {
     console.log("No non-pinned notice found");
@@ -235,6 +275,62 @@ async function run(env) {
 
   await saveRecentCache(env, recent);
   await env.NOTICE_STATE.put("last_seen_idx", String(maxIdx));
+}
+
+async function processPinned(env, payload) {
+  const pinned = pickRecentPinned(payload, RECENT_CACHE_SIZE);
+  const cache = await loadPinnedCache(env);
+
+  if (cache === null) {
+    await savePinnedCache(env, pinned);
+    console.log("Migrated: recent_pinned cache populated silently");
+    return;
+  }
+
+  const cacheByIdx = new Map(cache.map((c) => [c.idx, c]));
+  const newOnes = [];
+  const editedOnes = [];
+
+  for (const n of pinned) {
+    const cached = cacheByIdx.get(n.idx);
+    if (!cached) {
+      newOnes.push(n);
+    } else if (
+      cached.contents !== n.contents ||
+      (cached.imgMainSrc || "") !== (n.imgMainSrc || "")
+    ) {
+      editedOnes.push(n);
+    }
+  }
+
+  if (newOnes.length === 0 && editedOnes.length === 0) {
+    console.log("No new or edited pinned notices");
+    return;
+  }
+
+  newOnes.sort((a, b) => a.idx - b.idx);
+  editedOnes.sort((a, b) => a.idx - b.idx);
+
+  for (const n of newOnes) {
+    await sendNoticeWithImage(env, buildPinnedNewMessage(n), n.imgMainSrc || "");
+    console.log(`New pinned notice sent: idx ${n.idx}`);
+  }
+  for (const n of editedOnes) {
+    await sendNoticeWithImage(env, buildPinnedEditMessage(n), n.imgMainSrc || "");
+    console.log(`Edit pinned notice sent: idx ${n.idx}`);
+  }
+
+  await savePinnedCache(env, pinned);
+}
+
+async function run(env) {
+  const payload = await fetchNotices();
+  if (!payload.result) {
+    throw new Error("API returned result=false");
+  }
+
+  await processRegular(env, payload);
+  await processPinned(env, payload);
 }
 
 export default {
