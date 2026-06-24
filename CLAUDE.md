@@ -7,11 +7,14 @@
 # 시스템 구조 (현행)
 
 - **실행 인프라**: Cloudflare Workers (옛 GitHub Actions 시스템에서 이전됨)
-- **코드 파일**: `worker.js` (JavaScript).
-  단, **실제 가동 코드는 Cloudflare 대시보드에 배포된 본**이고,
-  GitHub 리포의 `worker.js`는 **참조용 사본**이다.
-  자동 배포 연동은 안 되어 있으므로, 코드 변경 시 사용자가 Cloudflare 대시보드에
-  복붙해 직접 배포해야 함.
+- **코드 파일**: `worker.js`. 로컬 폴더의 `worker.js`가 **원본(소스 오브 트루스)**이고,
+  `wrangler deploy`로 Cloudflare에 배포한다.
+- **배포 방식**: 로컬 폴더에서 `wrangler deploy` 실행 (`wrangler.toml` 설정 사용).
+  대시보드 복붙 불필요. **GitHub 푸시만으로는 가동 코드가 안 바뀜** — 배포는 별도 `wrangler deploy` 단계 필요.
+- **배포 설정 파일**: `wrangler.toml` — name·compatibility_date·KV 바인딩(`NOTICE_STATE`)·cron·observability.
+  시크릿은 여기 넣지 않음(Cloudflare Secrets 보관).
+- **GitHub 리포** (`miritini1230/jyn-notice-monitor`): 선택적 **백업/이력**용. 가동·배포 경로 밖.
+  큰 변경 후 잘 도는 걸 확인하면 `git push`로 스냅샷(의무 아님).
 - **상태 저장**: Cloudflare KV
   - 네임스페이스: `JYN_NOTICE_STATE`
   - 코드 내 바인딩 변수명: `NOTICE_STATE`
@@ -58,9 +61,10 @@
 - **환각/추측 금지**: 모호하면 코드 수정 전에 반드시 사용자에게 확인.
 - **클러터 금지**: 자명한 주석, 변경 이력 코멘트, 불필요한 로깅 추가 금지.
   코드는 깨끗하게 유지.
-- **배포는 사용자 손길 필요**: GitHub 푸시만으로는 가동 코드가 안 바뀜.
-  Claude가 worker.js를 수정하면, 변경된 전체 코드(또는 명확한 변경 부분)를
-  사용자에게 전달해 Cloudflare 대시보드에서 복붙·배포할 수 있게 안내할 것.
+- **배포는 `wrangler deploy`로**: worker.js 수정 후 사용자 승인을 받아 로컬에서
+  `wrangler deploy` 실행(대시보드 복붙 불필요). GitHub 푸시만으로는 반영 안 되므로
+  배포 단계 별도 필요. 시크릿·KV는 기존 것이 보존되니 건드리지 말 것.
+  백업이 필요하면 배포·검증 후 `git push`.
 
 # 보안
 
